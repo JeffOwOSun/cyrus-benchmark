@@ -1,6 +1,7 @@
 import os
 import sys
 from hashlib import sha1
+import random
 
 from munkres import Munkres, make_cost_matrix
 
@@ -24,17 +25,30 @@ def get_files(dirname):
 
 '''
 1. solve the given similarity matrix
+modes:
+    hungarian: hungarian assignment
+    canonical: sequential assignment
+    random: random assignment
 '''
-def solve(matrix):
-    m = Munkres()
-    indices = m.compute(make_cost_matrix(matrix, lambda x: sys.maxint-x))
-    assignments = [0]*len(matrix)
+def solve(matrix, mode='hungarian'):
+    assignments = [i for i in xrange(len(matrix))]
+    if mode == 'hungarian':
+        m = Munkres()
+        indices = m.compute(make_cost_matrix(matrix, lambda x: sys.maxint-x))
+        for share, bucket in indices:
+            assignments[share] = bucket
+        #print('assignments', assignments)
+    elif mode == 'random':
+        random.shuffle(assignments)
+    else :
+        pass
+    return assignments
+
+def get_score(matrix, assignment):
     total = 0
-    for share, bucket in indices:
-        assignments[share] = bucket
+    for share, bucket in enumerate(assignment):
         total += matrix[share][bucket]
-    #print('assignments', assignments)
-    return assignments, total
+    return total
 
 def get_fingerprint(f, T=2, N=3, piece_length=1024):
     ''' encode the original file into shares '''
@@ -80,7 +94,7 @@ def update(assignment, fingerprint):
             else:
                 database[piece] = {bucket}
 
-def main(dirname, T=2, N=3, K=3):
+def main(dirname, T=2, N=3, K=3, mode='hungarian', piece_length=1024):
     '''
     1. get a file list
     2. open every file
@@ -95,10 +109,12 @@ def main(dirname, T=2, N=3, K=3):
     for idx, fname in enumerate(files):
         #print('\r{}/{} {}'.format(idx, len(files), fname)),
         with open(fname, 'r') as f:
-            fingerprint, size = get_fingerprint(f.read(), T=T, N=N)
+            fingerprint, size = get_fingerprint(f.read(), T=T, N=N,
+                    piece_length=piece_length)
             totalsize += size
             matrix = compare(fingerprint, K=K)
-            assignment, score = solve(matrix)
+            assignment = solve(matrix, mode)
+            score = get_score(matrix, assignment)
             update(assignment, fingerprint)
             count += score
     rate = count/(totalsize/1024.0)
@@ -108,6 +124,21 @@ def main(dirname, T=2, N=3, K=3):
 
 if __name__ == '__main__':
     path = '/Users/jowos/OneDrive'
-    for N in xrange(3, 9):
-        for T in xrange(2, N+1):
-            print('T={} N={} {}'.format(T,N,main(path, T, N, N)))
+    #''' grid search for T & N '''
+    #for N in xrange(3, 9):
+    #    for T in xrange(2, N+1):
+    #        print(','.join([T, N, *main(path, T, N, N)]))
+    ''' comparison between different modes '''
+    T=4
+    N=5
+    #for mode in ['hungarian', 'canonical', 'random']:
+    #    print('T={} N={} mode={} {}'.format(3, 4, mode,
+    #        'rate={} dedup={}KB total={}KB'.format(*main(path, T=T, N=N, K=N,
+    #            mode=mode))))
+    ''' comparison between different piece size '''
+    T=4
+    N=5
+    for piece_length in [64, 128, 256, 512, 1024, 2048, 4096]:
+        print('T={} N={} mode={} piece={} {}'.format(3, 4, 'hungarian', piece_length,
+            'rate={} dedup={}KB total={}KB'.format(*main(path, T=T, N=N, K=N,
+                mode='hungarian', piece_length=piece_length))))
