@@ -13,7 +13,7 @@ import RSEncoder
     ...
 }
 '''
-database = {}
+database = dict()
 
 def get_files(dirname):
     ret = []
@@ -28,7 +28,7 @@ def get_files(dirname):
 def solve(matrix):
     m = Munkres()
     indices = m.compute(make_cost_matrix(matrix, lambda x: sys.maxint-x))
-    assignments = [0]*len(matrix[0])
+    assignments = [0]*len(matrix)
     total = 0
     for share, bucket in indices:
         assignments[share] = bucket
@@ -40,7 +40,9 @@ def get_fingerprint(f, T=2, N=3, piece_length=1024):
     ''' encode the original file into shares '''
     shares = RSEncoder.encode(f, T, N)
     retval = []
+    size = 0
     for share in shares:
+        size += len(share)
         offset = 0
         fingerprint = [] #fingerprint for each share
         while offset < len(share):
@@ -48,7 +50,7 @@ def get_fingerprint(f, T=2, N=3, piece_length=1024):
             fingerprint.append(sha1(piece).hexdigest())
             offset += piece_length
         retval.append(fingerprint)
-    return retval
+    return retval, size
 
 '''
 1. calculate the similarity score
@@ -78,7 +80,7 @@ def update(assignment, fingerprint):
             else:
                 database[piece] = {bucket}
 
-def main(dirname):
+def main(dirname, T=2, N=3, K=3):
     '''
     1. get a file list
     2. open every file
@@ -86,17 +88,26 @@ def main(dirname):
     4. compare fingerprint with database and figure out the score matrix
     5. solve score matrix to get assignment
     '''
+    database.clear() #clear database
     files = get_files(dirname)
     count = 0
+    totalsize = 0
     for idx, fname in enumerate(files):
-        print('{}/{} {}'.format(idx, len(files), fname))
+        #print('\r{}/{} {}'.format(idx, len(files), fname)),
         with open(fname, 'r') as f:
-            fingerprint = get_fingerprint(f.read())
-            matrix = compare(fingerprint)
+            fingerprint, size = get_fingerprint(f.read(), T=T, N=N)
+            totalsize += size
+            matrix = compare(fingerprint, K=K)
             assignment, score = solve(matrix)
             update(assignment, fingerprint)
             count += score
-    print('deduplicates {} KB'.format(count))
+    rate = count/(totalsize/1024.0)
+    #print('T={} N={} K={}, deduplicates {} KB out of {} KB, {}%'.format(T, N, K,
+    #    count, totalsize/1024, rate*100))
+    return rate, count, totalsize/1024
 
 if __name__ == '__main__':
-    main('/Users/jowos/OneDrive')
+    path = '/Users/jowos/OneDrive'
+    for N in xrange(3, 9):
+        for T in xrange(2, N+1):
+            print('T={} N={} {}'.format(T,N,main(path, T, N, N)))
