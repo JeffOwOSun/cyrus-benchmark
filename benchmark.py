@@ -2,6 +2,7 @@ import os
 import sys
 from hashlib import sha1
 import random
+import time
 
 from munkres import Munkres, make_cost_matrix
 
@@ -15,6 +16,12 @@ import RSEncoder
 }
 '''
 database = dict()
+'''
+{
+    'fjskdfsjkflssf': 1024,
+}
+'''
+fingerprint_sizes = dict()
 
 def get_files(dirname):
     ret = []
@@ -62,6 +69,8 @@ def get_fingerprint(f, T=2, N=3, piece_length=1024):
         while offset < len(share):
             piece = share[offset:offset+piece_length]
             fingerprint.append(sha1(piece).hexdigest())
+            ''' remember the size of fingerprint '''
+            fingerprint_sizes[fingerprint[-1]] = len(piece)
             offset += piece_length
         retval.append(fingerprint)
     return retval, size
@@ -78,7 +87,7 @@ def compare(fingerprint, K=3):
             if not piece in database:
                 continue
             for bucket in database[piece]:
-                row[bucket] += 1
+                row[bucket] += fingerprint_sizes[piece]
         matrix.append(row)
     #matrix = [[1,2,3],[4,5,6],[7,8,9]]
     return matrix
@@ -117,28 +126,46 @@ def main(dirname, T=2, N=3, K=3, mode='hungarian', piece_length=1024):
             score = get_score(matrix, assignment)
             update(assignment, fingerprint)
             count += score
-    rate = count/(totalsize/1024.0)
+    rate = count/float(totalsize)
     #print('T={} N={} K={}, deduplicates {} KB out of {} KB, {}%'.format(T, N, K,
     #    count, totalsize/1024, rate*100))
-    return rate, count, totalsize/1024
+    return rate, count/1024.0, totalsize/1024.0
 
 if __name__ == '__main__':
     path = '/Users/jowos/OneDrive'
-    #''' grid search for T & N '''
-    #for N in xrange(3, 9):
-    #    for T in xrange(2, N+1):
-    #        print(','.join([T, N, *main(path, T, N, N)]))
-    ''' comparison between different modes '''
-    T=4
-    N=5
-    #for mode in ['hungarian', 'canonical', 'random']:
-    #    print('T={} N={} mode={} {}'.format(3, 4, mode,
-    #        'rate={} dedup={}KB total={}KB'.format(*main(path, T=T, N=N, K=N,
-    #            mode=mode))))
-    ''' comparison between different piece size '''
-    T=4
-    N=5
-    for piece_length in [64, 128, 256, 512, 1024, 2048, 4096]:
-        print('T={} N={} mode={} piece={} {}'.format(3, 4, 'hungarian', piece_length,
-            'rate={} dedup={}KB total={}KB'.format(*main(path, T=T, N=N, K=N,
-                mode='hungarian', piece_length=piece_length))))
+    if len(sys.argv) > 1:
+        path = sys.argv[1]
+
+    #raw_input(''' grid search for T & N ''')
+    #with open('grid_search.csv', 'w') as f:
+    #    f.write('T,N,rate,dedup,total\n')
+    #    for N in xrange(3, 9):
+    #        for T in xrange(2, N+1):
+    #            rate, dedup, total = main(path, T, N, N)
+    #            print('T={} N={} rate={} dedup={}KB total={}KB'.format(T, N,
+    #                rate, dedup, total))
+    #            f.write('{},{},{},{},{}\n'.format(T, N, rate, dedup, total))
+
+    #raw_input(''' comparison between different modes ''')
+    #T=3
+    #N=4
+    #with open('modes.csv', 'w') as f:
+    #    f.write('mode,rate\n')
+    #    for mode in ['hungarian', 'canonical', 'random']:
+    #        rate, dedup, total = main(path, T, N, N, mode)
+    #        print('T={} N={} mode={} rate={} dedup={}KB total={}KB'.format(T,
+    #            N, mode, rate, dedup, total))
+    #        f.write('{},{}\n'.format(mode, rate))
+
+    raw_input(''' comparison between different piece size ''')
+    T=3
+    N=4
+    with open('shred_size.csv', 'w') as f:
+        f.write('shred_size,rate,elapse\n')
+        for piece_length in [64, 128, 256, 512, 1024, 2048, 4096]:
+            start = time.clock()
+            rate, dedup, total = main(path, T, N, N, 'hungarian', piece_length)
+            elapse = time.clock() - start
+            print('T={} N={} mode={} piece={} rate={} dedup={}KB total={}KB elapse={}s'.format(T, N, 'hungarian', piece_length, rate,
+                        dedup, total, elapse))
+            f.write('{},{},{}\n'.format(piece_length, rate, elapse))
