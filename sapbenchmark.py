@@ -3,6 +3,7 @@ import sys
 from hashlib import sha1
 import random
 import time
+from multiprocessing import Pool, TimeoutError
 
 from munkres import Munkres, make_cost_matrix
 
@@ -24,12 +25,15 @@ fingerprint_sizes = dict()
 '''
 retrieve list of all files in the dir whose name given
 '''
+file_cache={}
 def get_files(dirname):
-    ret = []
-    for dirname, dirs, files in os.walk(dirname):
-        for fname in files:
-            ret.append(os.path.join(dirname, fname))
-    return ret
+    if dirname not in file_cache:
+        ret = []
+        for dirname, dirs, files in os.walk(dirname):
+            for fname in files:
+                ret.append(os.path.join(dirname, fname))
+        file_cache[dirname] = ret
+    return file_cache[dirname]
 
 '''
 1. solve the given similarity matrix
@@ -54,16 +58,22 @@ def solve(matrix, mode='hungarian'):
 '''
 get the fingerprint of the given file
 '''
-def get_fingerprint(f, piece_length=1024):
-    offset = 0
-    fingerprint = []
-    while offset < len(f):
-        piece = f[offset:offset+piece_length]
-        fingerprint.append(sha1(piece).hexdigest())
-        '''remember the size of fingerprint for deduplication rate calculation'''
-        fingerprint_sizes[fingerprint[-1]] = len(piece)
-        offset += piece_length
-    return fingerprint, len(f)
+fingerprint_cache={}
+def get_fingerprint(fname, piece_length=1024):
+    if fname not in fingerprint_cache:
+        with open(fname, 'r') as f:
+            buf = f.read()
+            offset = 0
+            fingerprint = []
+            length = len(buf)
+            while offset < length:
+                piece = buf[offset:offset+piece_length]
+                fingerprint.append(sha1(piece).hexdigest())
+                '''remember the size of fingerprint for deduplication rate calculation'''
+                fingerprint_sizes[fingerprint[-1]] = len(piece)
+                offset += piece_length
+            fingerprint_cache[fname] = (fingerprint, length)
+    return fingerprint_cache[fname]
 
 '''
 1. calculate the similarity score
@@ -74,7 +84,7 @@ def compare(fingerprints, K=3):
     matrix = []
     ratio = 1
     for fp in fingerprints:
-        row = [0]*K
+        row = [0 for x in xrange(K)]
         for piece in fp:
             if not piece in database:
                 continue
@@ -87,7 +97,7 @@ def compare(fingerprints, K=3):
         ratio = len(fingerprints) / K + 1
         matrix = [row * ratio for row in matrix]
     if len(fingerprints) < ratio * K:
-        matrix.extend([[0]*ratio*K]*(ratio*K-len(fingerprints)))
+        matrix.extend([[0 for x in xrange(ratio*K)] for y in xrange(ratio*K-len(fingerprints))])
     return matrix
 
 '''
@@ -112,7 +122,8 @@ def update(assignment, fingerprints, K=3):
             else:
                 database[piece] = {bucket % K}
 
-def main(dirname, K=3, rand_range=[3, 6], mode='hungarian', piece_length=1024):
+def main(dirname, K=3, rand_range=[3, 6], mode='hungarian', piece_length=1024,
+        seed=None):
     '''
     1. get a file list
     2. open every file
@@ -120,6 +131,9 @@ def main(dirname, K=3, rand_range=[3, 6], mode='hungarian', piece_length=1024):
     4. compare fingerprint with database and figure out the score matrix
     5. solve score matrix to get assignment
     '''
+    print("running main with {} {} {} {}".format(dirname, K, rand_range, seed))
+    start = time.clock()
+    random.seed(seed)
     database.clear() #clear database
     files = get_files(dirname) #get list of filenames
     count = 0
@@ -128,9 +142,8 @@ def main(dirname, K=3, rand_range=[3, 6], mode='hungarian', piece_length=1024):
     while idx < len(files):
         buf = files[idx:idx+random.randint(*rand_range)]
         idx += len(buf)
-        buf = [open(fname, 'r') for fname in buf]
         '''get fingerprint of the file s'''
-        fingerprints, sizes = zip(*[get_fingerprint(f.read(), piece_length=piece_length) for f in buf])
+        fingerprints, sizes = zip(*[get_fingerprint(fname, piece_length=piece_length) for fname in buf])
         '''total size of the files. statistic for benchmark'''
         totalsize += sum(sizes)
         '''generate the matrix. Augmentation takes place here'''
@@ -146,17 +159,92 @@ def main(dirname, K=3, rand_range=[3, 6], mode='hungarian', piece_length=1024):
     rate = count/float(totalsize)
     #print('T={} N={} K={}, deduplicates {} KB out of {} KB, {}%'.format(T, N, K,
     #    count, totalsize/1024, rate*100))
-    return rate, count/1024.0, totalsize/1024.0
+    elapse = time.clock() - start
+    return rate, count/1024.0, totalsize/1024.0, elapse
+
+def wrapped_main(args):
+    return main(*args)+args
 
 if __name__ == '__main__':
-    #random.seed(42)
-    path = '/Users/jowos/OneDrive'
-    if len(sys.argv) > 1:
-        path = sys.argv[1]
-    print('running on path {}'.format(path))
-    K = 3
-    rand_range=[3,6]
-    start = time.clock()
-    rate, dedup, total = main(path, K, rand_range, 'hungarian', 1024)
-    elapse = time.clock() - start
-    print('rate={} dedup={}K total={}K elapse={}s'.format(rate,dedup,total,elapse))
+    #path = '/Users/jowos/Dropbox/SAP Data'
+    #if len(sys.argv) > 1:
+    #    path = sys.argv[1]
+    #print('running on path {}'.format(path))
+    #root_path='/Users/jowos/Dropbox/SAP Data'
+    root_path='/Volumes/RAM Disk'
+    paths = [
+            #'/Users/jowos/Dropbox/SAP Data',
+            root_path+'/book',
+            root_path+'/CNN',
+            root_path+'/mp3',
+            #'/Users/jowos/Dropbox/SAP Data/UbuntuImage',
+            #root_path+'/UbuntuImage/uec-images.ubuntu.com/releases/10.04',
+            root_path+'/10.04',
+            ]
+    num_repetition = 10
+    '''warm up'''
+    print('warming up...')
+    for path in paths:
+        main(path, 1, [1,1], 'hungarian', 512)
+    '''
+    use single processing to calculate the fixed window size situation, so
+    that the caches are filled
+    '''
+    for K in [1, 3]:
+        '''rand range 1'''
+        rand_range=[1,1]
+        with open('sapbenchmark_output_K={}_rand_range={}.csv'.format(K, rand_range), 'w') as f:
+            f.write('path,dedup rate,dedup size,total size,elapse time (s)\n')
+            for path in paths:
+                rate, dedup, total, elapse = main(path, K, rand_range, 'hungarian', 512)
+                print('rate={} dedup={}K total={}K elapse={}s'.format(rate,dedup,total,elapse))
+                f.write('{},{},{},{},{}\n'.format(path, rate, dedup, total, elapse))
+
+    '''now use multiprocess magic'''
+    job_list = []
+    for K in [1, 3]:
+        rand_range=[3, 6]
+        for seed in xrange(num_repetition):
+            for path in paths:
+                job = (path, K, rand_range, 'hungarian', 512, seed)
+                job_list.append(job)
+    print(job_list)
+    pool = Pool(processes=4)
+    ret = pool.map(wrapped_main, job_list, 10)
+    '''collect the results under paths'''
+    results = { K:{path:[] for path in paths} for K in [1, 3]}
+    for record in ret:
+        (rate, dedup, total, elapse, path, K, rand_range, alg_type, chunk_size,
+        seed) = record
+        results[K][path].append((rate, dedup, total, elapse))
+    for K in [1,3]:
+        '''average them out'''
+        averaged_results = { path:(sum(x)/float(num_repetition) for x in zip(*results[K][path])) for path in paths}
+        '''write to file'''
+        with open('sapbenchmark_output_K={}_rand_range={}.csv'.format(K, [3,6]), 'w') as f:
+            f.write('path,dedup rate,dedup size,total size,elapse time (s)\n')
+            for path in paths:
+                rate, dedup, total, elapse = averaged_results[path]
+                print('rate={} dedup={}K total={}K elapse={}s'.format(rate,dedup,total,elapse))
+                f.write('{},{},{},{},{}\n'.format(path, rate, dedup, total, elapse))
+
+
+    """
+    for K in [1, 3]:
+        '''rand range 3,6'''
+        rand_range=[3,6]
+        results = { path:[] for path in paths}
+        for i in xrange(num_repetition):
+            print('repeating for the {} of {} time'.format(i, num_repetition))
+            ''' run and record the results '''
+            for path in paths:
+                rate, dedup, total, elapse = main(path, K, rand_range, 'hungarian', 512)
+                results[path].append((rate, dedup, total, elapse))
+        averaged_results = { path:(sum(x)/float(num_repetition) for x in zip(*results[path])) for path in paths}
+        with open('sapbenchmark_output_K={}_rand_range={}.csv'.format(K, rand_range), 'w') as f:
+            f.write('path,dedup rate,dedup size,total size,elapse time (s)\n')
+            for path in paths:
+                rate, dedup, total, elapse = averaged_results[path]
+                print('rate={} dedup={}K total={}K elapse={}s'.format(rate,dedup,total,elapse))
+                f.write('{},{},{},{},{}\n'.format(path, rate, dedup, total, elapse))
+    """
